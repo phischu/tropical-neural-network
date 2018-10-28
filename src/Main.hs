@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE DeriveTraversable, GADTs #-}
 module Main where
 
 import Test.QuickCheck (
@@ -16,18 +16,49 @@ import Diagrams.Prelude (
 import Diagrams.Backend.Rasterific (
   renderRasterific, Rasterific)
 
+import Numeric.AD (
+  gradientDescent, auto, Mode, Scalar)
+
 import Linear (
   V2(V2), V4(V4))
 import Linear.Affine (
   Point(P))
 import Linear.Matrix (
-  M44, M42, (!*))
+  M24, M42, (!*))
 
 import Control.Monad (
   replicateM, liftM2, liftM4)
 import Data.Function (
   (&))
 
+
+-- Net
+
+data Net a = Net (M24 (Arctic a)) (M42 a)
+  deriving (Functor, Foldable, Traversable)
+
+runNet :: (Fractional a, Ord a) => Net a -> V2 a -> V2 a
+runNet (Net m1 m0) x = fmap unArctic (m1 !* (fmap Arctic (m0 !* x)))
+
+
+-- Training
+
+train :: [TrainingSample] -> Net Double -> [Net Double]
+train trainingSamples net =
+  gradientDescent (lossFunction trainingSamples) net
+
+lossFunction ::
+  (Num a, Fractional a, Floating a, Ord a, Mode a, Scalar a ~ Double) =>
+  [TrainingSample] -> Net a -> a
+lossFunction trainingSamples net = sum (do
+    TrainingSample x c <- trainingSamples
+    let V2 c1 c2 = runNet net (fmap auto x)
+    case c of
+      False -> return (negate (log c1))
+      True -> return (negate (log c2)))
+
+
+-- Generate training data
 
 data TrainingSample = TrainingSample {
   sampleInput :: V2 Double,
@@ -64,15 +95,6 @@ runGen (MkGen gen) =
   gen (mkQCGen 489) 30
 
 
-renderTrainingSamples :: [TrainingSample] -> Diagram Rasterific
-renderTrainingSamples trainingSamples = position (do
-  TrainingSample x y <- trainingSamples
-  let yColor = case y of
-        False -> blue
-        True -> orange
-  let sampleDiagram = circle 0.02 & fillColor yColor
-  return (P x, sampleDiagram))
-
 -- Arctic
 
 newtype Arctic a = Arctic { unArctic :: a }
@@ -90,23 +112,17 @@ instance (Num a, Ord a) => Num (Arctic a) where
 instance (Arbitrary a) => Arbitrary (Arctic a) where
   arbitrary = fmap Arctic arbitrary
 
--- Net
 
-data Net a = Net (M44 (Arctic a)) (M42 a)
-  deriving (Functor, Foldable, Traversable)
-
-runNet :: (Fractional a, Ord a) => Net a -> V2 a -> a
-runNet (Net m1 m0) x = unArctic (sum (m1 !* (fmap Arctic (m0 !* x))))
-
+-- Generate initial Net
 
 generateNet :: (Arbitrary a) => Gen (Net a)
-generateNet = liftM2 Net generateM44 generateM42
+generateNet = liftM2 Net generateM24 generateM42
 
 generateM42 :: (Arbitrary a) => Gen (M42 a)
 generateM42 = liftM4 V4 generateV2 generateV2 generateV2 generateV2
 
-generateM44 :: (Arbitrary a) => Gen (M44 a)
-generateM44 = liftM4 V4 generateV4 generateV4 generateV4 generateV4
+generateM24 :: (Arbitrary a) => Gen (M24 a)
+generateM24 = liftM2 V2 generateV4 generateV4
 
 generateV2 :: (Arbitrary a) => Gen (V2 a)
 generateV2 = liftM2 V2 arbitrary arbitrary
@@ -115,8 +131,23 @@ generateV4 :: (Arbitrary a) => Gen (V4 a)
 generateV4 = liftM4 V4 arbitrary arbitrary arbitrary arbitrary
 
 
-exampleNet :: (Arbitrary a) => Net a
-exampleNet = runGen generateNet
+exampleNet :: Net Double
+exampleNet = let
+  initialNet = runGen generateNet
+  trainedNets = train trainingData initialNet
+  in trainedNets !! 500
+
+
+-- Visualization
+
+renderTrainingSamples :: [TrainingSample] -> Diagram Rasterific
+renderTrainingSamples trainingSamples = position (do
+  TrainingSample x y <- trainingSamples
+  let yColor = case y of
+        False -> blue
+        True -> orange
+  let sampleDiagram = circle 0.02 & fillColor yColor
+  return (P x, sampleDiagram))
 
 
 renderNet :: Net Double -> Diagram Rasterific
@@ -124,8 +155,8 @@ renderNet net = let
 
   resolution = 600
 
-  outputColor r =
-    opaque (blend (logistic r) orange blue)
+  outputColor (V2 c1 c2) =
+    opaque (blend (logistic (c2 - c1)) orange blue)
 
   logistic x = recip (1 + exp (negate x))
 
