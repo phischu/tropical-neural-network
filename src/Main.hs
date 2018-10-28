@@ -1,7 +1,8 @@
+{-# LANGUAGE DeriveTraversable #-}
 module Main where
 
 import Test.QuickCheck (
-  Gen, oneof, choose)
+  Gen, oneof, choose, Arbitrary(arbitrary))
 import Test.QuickCheck.Random (
   mkQCGen)
 import Test.QuickCheck.Gen (
@@ -16,14 +17,14 @@ import Diagrams.Backend.Rasterific (
   renderRasterific, Rasterific)
 
 import Linear (
-  V2(V2))
+  V2(V2), V4(V4))
 import Linear.Affine (
   Point(P))
 import Linear.Matrix (
-  M22, identity, (!*))
+  M44, M42, (!*))
 
 import Control.Monad (
-  replicateM)
+  replicateM, liftM2, liftM4)
 import Data.Function (
   (&))
 
@@ -72,16 +73,50 @@ renderTrainingSamples trainingSamples = position (do
   let sampleDiagram = circle 0.02 & fillColor yColor
   return (P x, sampleDiagram))
 
+-- Arctic
+
+newtype Arctic a = Arctic { unArctic :: a }
+  deriving (Functor, Foldable, Traversable)
+
+instance (Num a, Ord a) => Num (Arctic a) where
+  (Arctic a) + (Arctic b) = Arctic (a `max` b)
+  (Arctic a) * (Arctic b) = Arctic (a + b)
+  (Arctic _) - (Arctic _) = error "Arctic: unsupported operation"
+  negate (Arctic _) = error "Arctic: unsupported operation"
+  abs (Arctic _) = error "Arctic: unsupported operation"
+  signum (Arctic _) = error "Arctic: unsupported operation"
+  fromInteger a = Arctic (fromInteger a)
+
+instance (Arbitrary a) => Arbitrary (Arctic a) where
+  arbitrary = fmap Arctic arbitrary
+
+-- Net
+
+data Net a = Net (M44 (Arctic a)) (M42 a)
+  deriving (Functor, Foldable, Traversable)
+
+runNet :: (Fractional a, Ord a) => Net a -> V2 a -> a
+runNet (Net m1 m0) x = unArctic (sum (m1 !* (fmap Arctic (m0 !* x))))
 
 
-data Net a = Net (M22 a)
+generateNet :: (Arbitrary a) => Gen (Net a)
+generateNet = liftM2 Net generateM44 generateM42
 
-runNet :: (Fractional a) => Net a -> V2 a -> a
-runNet (Net m1) x = sum (m1 !* x)
+generateM42 :: (Arbitrary a) => Gen (M42 a)
+generateM42 = liftM4 V4 generateV2 generateV2 generateV2 generateV2
+
+generateM44 :: (Arbitrary a) => Gen (M44 a)
+generateM44 = liftM4 V4 generateV4 generateV4 generateV4 generateV4
+
+generateV2 :: (Arbitrary a) => Gen (V2 a)
+generateV2 = liftM2 V2 arbitrary arbitrary
+
+generateV4 :: (Arbitrary a) => Gen (V4 a)
+generateV4 = liftM4 V4 arbitrary arbitrary arbitrary arbitrary
 
 
-exampleNet :: (Num a) => Net a
-exampleNet = Net identity
+exampleNet :: (Arbitrary a) => Net a
+exampleNet = runGen generateNet
 
 
 renderNet :: Net Double -> Diagram Rasterific
