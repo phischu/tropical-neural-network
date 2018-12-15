@@ -9,18 +9,20 @@ import Test.QuickCheck.Gen (
   Gen(MkGen))
 
 import Diagrams.Prelude (
-  Diagram, circle, position, rect, rasterDia,
+  Diagram, circle, position, rasterDia,
   atop, scaleUToX,
-  fillColor, lineColor, orange, blue, white, transparent, opaque, blend,
+  fillColor, orange, blue, white, opaque, blend,
+  bgFrame,
   dims)
 import Diagrams.Backend.Rasterific (
-  renderRasterific, Rasterific)
+  Rasterific, renderRasterific,
+  animatedGif, GifLooping(LoopingForever))
 
 import Numeric.AD (
   gradientDescent, auto, Mode, Scalar)
 
 import Linear (
-  V2(V2), V4(V4))
+  Additive, V2(V2), V4(V4))
 import Linear.Affine (
   Point(P))
 import Linear.Matrix (
@@ -34,12 +36,21 @@ import Data.Function (
 
 -- Net
 
-data Net a = Net (M24 (Arctic a)) (M42 a)
+data Net a = Net (M24 a) (M42 a)
   deriving (Functor, Foldable, Traversable)
 
 runNet :: (Fractional a, Ord a) => Net a -> V2 a -> V2 a
-runNet (Net m1 m0) x = fmap unArctic (m1 !* (fmap Arctic (m0 !* x)))
+runNet (Net m1 m0) = tropically m1 . normally m0
 
+normally :: (Functor v, Foldable w, Additive w, Num a) =>
+  v (w a) -> w a -> v a
+normally matrix vector =
+  matrix !* vector
+
+tropically :: (Functor v, Foldable w, Additive w, Ord a, Num a) =>
+  v (w a) -> w a -> v a
+tropically matrix vector =
+  fmap unTropical (fmap (fmap Tropical) matrix !* fmap Tropical vector)
 
 -- Training
 
@@ -95,22 +106,22 @@ runGen (MkGen gen) =
   gen (mkQCGen 489) 30
 
 
--- Arctic
+-- Tropical
 
-newtype Arctic a = Arctic { unArctic :: a }
+newtype Tropical a = Tropical { unTropical :: a }
   deriving (Functor, Foldable, Traversable)
 
-instance (Num a, Ord a) => Num (Arctic a) where
-  (Arctic a) + (Arctic b) = Arctic (a `max` b)
-  (Arctic a) * (Arctic b) = Arctic (a + b)
-  (Arctic _) - (Arctic _) = error "Arctic: unsupported operation"
-  negate (Arctic _) = error "Arctic: unsupported operation"
-  abs (Arctic _) = error "Arctic: unsupported operation"
-  signum (Arctic _) = error "Arctic: unsupported operation"
-  fromInteger a = Arctic (fromInteger a)
+instance (Num a, Ord a) => Num (Tropical a) where
+  (Tropical a) + (Tropical b) = Tropical (a `max` b)
+  (Tropical a) * (Tropical b) = Tropical (a + b)
+  (Tropical _) - (Tropical _) = error "Tropical: unsupported operation"
+  negate (Tropical _) = error "Tropical: unsupported operation"
+  abs (Tropical _) = error "Tropical: unsupported operation"
+  signum (Tropical _) = error "Tropical: unsupported operation"
+  fromInteger a = Tropical (fromInteger a)
 
-instance (Arbitrary a) => Arbitrary (Arctic a) where
-  arbitrary = fmap Arctic arbitrary
+instance (Arbitrary a) => Arbitrary (Tropical a) where
+  arbitrary = fmap Tropical arbitrary
 
 
 -- Generate initial Net
@@ -131,11 +142,11 @@ generateV4 :: (Arbitrary a) => Gen (V4 a)
 generateV4 = liftM4 V4 arbitrary arbitrary arbitrary arbitrary
 
 
-exampleNet :: Net Double
-exampleNet = let
+exampleNets :: [Net Double]
+exampleNets = let
   initialNet = runGen generateNet
   trainedNets = train trainingData initialNet
-  in trainedNets !! 500
+  in trainedNets
 
 
 -- Visualization
@@ -156,9 +167,10 @@ renderNet net = let
   resolution = 600
 
   outputColor (V2 c1 c2) =
-    opaque (blend (logistic (c2 - c1)) orange blue)
-
+    opaque (blend (logistic (c2 - c1)) lightOrange lightBlue)
   logistic x = recip (1 + exp (negate x))
+  lightOrange = blend 0.2 white orange
+  lightBlue = blend 0.2 white blue
 
   pointRaster i j = let
     x1 = 2 * (fromIntegral i / fromIntegral resolution) - 1
@@ -173,14 +185,22 @@ renderNet net = let
 
 main :: IO ()
 main = do
-  let whiteBackground =
-        rect 2.1 2.1 & fillColor white & lineColor transparent
-  let outputDiagram =
-        renderTrainingSamples trainingData `atop`
-        renderNet exampleNet `atop`
-        whiteBackground
+  let numberOfOutputDiagrams = 4
+  let outputOnlyEvery = 100
+  let outputDiagrams = take numberOfOutputDiagrams (do
+        exampleNet <- every outputOnlyEvery exampleNets
+        return (
+          bgFrame 0.1 white (
+          renderTrainingSamples trainingData `atop`
+          renderNet exampleNet)))
   let sizeSpec =
         dims (V2 600 600)
-  renderRasterific "training_samples.png" sizeSpec outputDiagram
+  renderRasterific "out/classification.png" sizeSpec (last outputDiagrams)
+  animatedGif "out/training.gif" sizeSpec LoopingForever 100 outputDiagrams
 
+
+every :: Int -> [a] -> [a]
+every n xs = case drop (n-1) xs of
+  (y:ys) -> y : every n ys
+  [] -> []
 
