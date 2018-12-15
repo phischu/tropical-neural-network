@@ -2,7 +2,7 @@
 module Main where
 
 import Test.QuickCheck (
-  Gen, oneof, choose, Arbitrary(arbitrary))
+  Gen, choose, oneof, Arbitrary(arbitrary))
 import Test.QuickCheck.Random (
   mkQCGen)
 import Test.QuickCheck.Gen (
@@ -22,7 +22,7 @@ import Numeric.AD (
   gradientDescent, auto, Mode, Scalar)
 
 import Linear (
-  Additive, V2(V2), V4(V4))
+  Additive((^+^), (^-^)), V2(V2), V4(V4))
 import Linear.Affine (
   Point(P))
 import Linear.Matrix (
@@ -52,6 +52,7 @@ tropically :: (Functor v, Foldable w, Additive w, Ord a, Num a) =>
 tropically matrix vector =
   fmap unTropical (fmap (fmap Tropical) matrix !* fmap Tropical vector)
 
+
 -- Training
 
 train :: [TrainingSample] -> Net Double -> [Net Double]
@@ -76,30 +77,37 @@ data TrainingSample = TrainingSample {
   sampleOutput :: Bool}
     deriving (Show)
 
-trainingData :: [TrainingSample]
-trainingData =
-  runGen generateTrainingSamples
+type Rect a = V2 (V2 a)
 
-generateTrainingSamples :: Gen [TrainingSample]
-generateTrainingSamples =
-  replicateM 50 generateTrainingSample
+runTrainingSampleGeneration :: V2 [Rect Double] -> [TrainingSample]
+runTrainingSampleGeneration rects =
+  runGen (replicateM 50 (generateTrainingSample rects))
 
-generateTrainingSample :: Gen TrainingSample
-generateTrainingSample = oneof [
-  generateTrainingSample1,
-  generateTrainingSample2]
+generateTrainingSample :: V2 [Rect Double] -> Gen TrainingSample
+generateTrainingSample (V2 falseRects trueRects)= do
+  c <- arbitrary
+  case c of
+    False -> do
+      x <- oneof (map generatePointInRect falseRects)
+      return (TrainingSample x False)
+    True -> do
+      x <- oneof (map generatePointInRect trueRects)
+      return (TrainingSample x True)
 
-generateTrainingSample1 :: Gen TrainingSample
-generateTrainingSample1 = do
-  x1 <- choose (-1,0)
-  x2 <- choose (-1,0)
-  return (TrainingSample (V2 x1 x2) False)
+generatePointInRect :: Rect Double -> Gen (V2 Double)
+generatePointInRect (V2 (V2 l1 l2) (V2 u1 u2)) = do
+  x1 <- choose (l1, u1)
+  x2 <- choose (l2, u2)
+  return (V2 x1 x2)
 
-generateTrainingSample2 :: Gen TrainingSample
-generateTrainingSample2 = do
-  x1 <- choose (0,1)
-  x2 <- choose (0,1)
-  return (TrainingSample (V2 x1 x2) True)
+generateRect :: Gen (Rect Double)
+generateRect = do
+  m1 <- choose (-0.8, 0.8)
+  m2 <- choose (-0.8, 0.8)
+  let m = V2 m1 m2
+  s <- choose (0, 0.2)
+  let r = V2 s s
+  return (V2 (m ^-^ r) (m ^+^ r))
 
 runGen :: Gen a -> a
 runGen (MkGen gen) =
@@ -142,22 +150,19 @@ generateV4 :: (Arbitrary a) => Gen (V4 a)
 generateV4 = liftM4 V4 arbitrary arbitrary arbitrary arbitrary
 
 
-exampleNets :: [Net Double]
-exampleNets = let
-  initialNet = runGen generateNet
-  trainedNets = train trainingData initialNet
-  in trainedNets
-
-
 -- Visualization
 
 renderTrainingSamples :: [TrainingSample] -> Diagram Rasterific
 renderTrainingSamples trainingSamples = position (do
+
   TrainingSample x y <- trainingSamples
+
   let yColor = case y of
         False -> blue
         True -> orange
+
   let sampleDiagram = circle 0.02 & fillColor yColor
+
   return (P x, sampleDiagram))
 
 
@@ -168,6 +173,7 @@ renderNet net = let
 
   outputColor (V2 c1 c2) =
     opaque (blend (logistic (c2 - c1)) lightOrange lightBlue)
+
   logistic x = recip (1 + exp (negate x))
   lightOrange = blend 0.2 white orange
   lightBlue = blend 0.2 white blue
@@ -183,24 +189,75 @@ renderNet net = let
   in rasterDia pointColor resolution resolution & scaleUToX 2
 
 
-main :: IO ()
-main = do
-  let numberOfOutputDiagrams = 4
-  let outputOnlyEvery = 100
-  let outputDiagrams = take numberOfOutputDiagrams (do
-        exampleNet <- every outputOnlyEvery exampleNets
-        return (
-          bgFrame 0.1 white (
-          renderTrainingSamples trainingData `atop`
-          renderNet exampleNet)))
-  let sizeSpec =
-        dims (V2 600 600)
-  renderRasterific "out/classification.png" sizeSpec (last outputDiagrams)
-  animatedGif "out/training.gif" sizeSpec LoopingForever 100 outputDiagrams
+numberOfOutputDiagrams :: Int
+numberOfOutputDiagrams = 8
 
+outputOnlyEvery :: Int
+outputOnlyEvery = 100
+
+outputDiagrams :: [TrainingSample] -> [Net Double] -> [Diagram Rasterific]
+outputDiagrams trainingSamples exampleNets = take numberOfOutputDiagrams (do
+
+  exampleNet <- every outputOnlyEvery exampleNets
+
+  let outputDiagram = bgFrame 0.1 white (
+        renderTrainingSamples trainingSamples `atop`
+        renderNet exampleNet)
+
+  return outputDiagram)
 
 every :: Int -> [a] -> [a]
 every n xs = case drop (n-1) xs of
   (y:ys) -> y : every n ys
   [] -> []
+
+
+-- Main
+
+runTraining :: [TrainingSample] -> [Net Double]
+runTraining trainingSamples = let
+
+  initialNet = runGen generateNet
+  trainedNets = train trainingSamples initialNet
+
+  in trainedNets
+
+
+rects1 :: V2 [V2 (V2 Double)]
+rects1 = V2
+  [V2 (V2 (-1) (-1)) (V2 0 0)]
+  [V2 (V2 0 0) (V2 1 1)]
+
+rects2 :: V2 [V2 (V2 Double)]
+rects2 = V2
+  [V2 (V2 (-1) (-1)) (V2 0 0), V2 (V2 0 0) (V2 1 1)]
+  [V2 (V2 (-1) 0) (V2 0 1), V2 (V2 0 (-1)) (V2 1 0)]
+
+rects3 :: V2 [V2 ((V2 Double))]
+rects3 = runGen (
+  liftM2 V2 (replicateM 3 generateRect) (replicateM 3 generateRect))
+
+
+main :: IO ()
+main = do
+
+  let trainingSamples1 = runTrainingSampleGeneration rects1
+  let trainingSamples2 = runTrainingSampleGeneration rects2
+  let trainingSamples3 = runTrainingSampleGeneration rects3
+
+  let trainedNets1 = runTraining trainingSamples1
+  let trainedNets2 = runTraining trainingSamples2
+  let trainedNets3 = runTraining trainingSamples3
+
+  let outputDiagrams1 = outputDiagrams trainingSamples1 trainedNets1
+  let outputDiagrams2 = outputDiagrams trainingSamples2 trainedNets2
+  let outputDiagrams3 = outputDiagrams trainingSamples3 trainedNets3
+
+  let sizeSpec = dims (V2 600 600)
+
+  renderRasterific "out/classification.png" sizeSpec (last outputDiagrams1)
+  animatedGif "out/training1.gif" sizeSpec LoopingForever 100 outputDiagrams1
+  animatedGif "out/training2.gif" sizeSpec LoopingForever 100 outputDiagrams2
+  animatedGif "out/training3.gif" sizeSpec LoopingForever 100 outputDiagrams3
+
 
