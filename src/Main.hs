@@ -37,7 +37,7 @@ import Data.Function (
 -- Net
 
 data Net a = Net (M24 a) (M42 a)
-  deriving (Functor, Foldable, Traversable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 runNet :: (Fractional a, Ord a) => Net a -> V2 a -> V2 a
 runNet (Net m1 m0) = tropically m1 . normally m0
@@ -64,10 +64,16 @@ lossFunction ::
   [TrainingSample] -> Net a -> a
 lossFunction trainingSamples net = sum (do
     TrainingSample x c <- trainingSamples
-    let V2 c1 c2 = runNet net (fmap auto x)
+    let V2 p1 p2 = softArgMax (runNet net (fmap auto x))
     case c of
-      False -> return (negate (log c1))
-      True -> return (negate (log c2)))
+      False -> return (negate (log p1))
+      True -> return (negate (log p2)))
+
+softArgMax :: (Floating a) => V2 a -> V2 a
+softArgMax x = let
+  e = fmap exp x
+  s = sum e
+  in fmap (/s) e
 
 
 -- Generate training data
@@ -172,9 +178,8 @@ renderNet net = let
   resolution = 600
 
   outputColor (V2 c1 c2) =
-    opaque (blend (logistic (c2 - c1)) lightOrange lightBlue)
+    opaque (blend (0.5 * (1 + c2 - c1)) lightOrange lightBlue)
 
-  logistic x = recip (1 + exp (negate x))
   lightOrange = blend 0.2 white orange
   lightBlue = blend 0.2 white blue
 
@@ -184,7 +189,7 @@ renderNet net = let
     in V2 x1 x2
 
   pointColor i j =
-    outputColor (runNet net (pointRaster i j))
+    outputColor (softArgMax (runNet net (pointRaster i j)))
 
   in rasterDia pointColor resolution resolution & scaleUToX 2
 
@@ -218,7 +223,8 @@ runTraining :: [TrainingSample] -> [Net Double]
 runTraining trainingSamples = let
 
   initialNet = runGen generateNet
-  trainedNets = train trainingSamples initialNet
+  normalizedNet = fmap (/ sum initialNet) initialNet
+  trainedNets = train trainingSamples normalizedNet
 
   in trainedNets
 
